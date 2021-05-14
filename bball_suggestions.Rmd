@@ -1,0 +1,157 @@
+---
+title: "NBA Performance and Salary Report"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+###Load necessary packages
+library(e1071)
+library(tidyverse)
+library(plotly)
+library(stringi)
+library(DT)
+```
+
+```{r}
+###Read in the two data frames and create function for pre-processing/cleaning of data, as well as merging of the two data frames
+d1<-read_csv("nbasuperfile.csv")
+d2<-read_csv("nbasal.csv")
+
+nba_pre_processing <- function(d1,d2){
+  #omit missing vals in each data frame
+  d1<-na.omit(d1) 
+  d2<-na.omit(d2)
+  #only keep "TOT" data from traded players to prevent multiple stats for each player
+  d1<-d1 %>% distinct(Player, .keep_all = TRUE) 
+  #merge the information and salary dataframes together
+  full_nba_data = left_join(d1,d2) 
+  #players should only be considered if >= 50 mins. played.
+  full_nba_data<-full_nba_data%>%distinct(Player,.keep_all =TRUE)%>%filter(MP>50) 
+  full_nba_data<-na.omit(full_nba_data) #omit any more missing values, if present
+  #omit problematic str. values in Player column
+  full_nba_data$Player <- str_replace_all(full_nba_data$Player, "[[:punct:]]", " ")
+  full_nba_data$Player <- str_replace_all(full_nba_data$Player, "[^[:alnum:]]", " ")
+  full_nba_data
+}
+#save back to the data frame the result of running the function with the two data frames as input
+full_nba_data <- nba_pre_processing(d1,d2)
+#the merged dataframe containing player stats along with salary (`2020-21` column)
+
+
+```
+
+```{r}
+#produce additional column with standardized salaries; to be used in data viz
+full_nba_data <- full_nba_data %>%
+ mutate(sal = `2020-21` / 2000000)
+#full_nba_data
+```
+
+```{r}
+###Alter data frame by standardizing certain columns
+range_vals<-function(x){(x-min(x))/(max(x)-min(x))} #this function will scale all values of interest in the data frame to a decimal value between 0 and 1
+#https://stats.stackexchange.com/questions/70801/how-to-normalize-data-to-0-1-range
+
+#feed the following columns of interest into the function to convert the columns to standardized proportions for comparison
+full_nba_data$Age<-range_vals(full_nba_data$Age) 
+full_nba_data$G<-range_vals(full_nba_data$G)
+full_nba_data$MP<-range_vals(full_nba_data$MP) 
+full_nba_data$ORB<-range_vals(full_nba_data$ORB)
+full_nba_data$DRB<-range_vals(full_nba_data$DRB)
+full_nba_data$TRB<-range_vals(full_nba_data$TRB)
+full_nba_data$AST<-range_vals(full_nba_data$AST) 
+full_nba_data$STL<-range_vals(full_nba_data$STL)
+full_nba_data$BLK<-range_vals(full_nba_data$BLK) 
+full_nba_data$TOV<-range_vals(full_nba_data$TOV) 
+```
+
+```{r}
+#Subset standardized data frame to Variables of Interest (those to be used in evaluating player performance)
+for_clustering<- full_nba_data[, c("Age", "G", "MP","FG%","3P%", "2P%", "eFG%", "FT%", "TRB", "AST", "STL", "BLK")] #use syntax df[r,c]
+#View(for_clustering)
+```
+
+#K Means Distance Measure Clustering
+```{r}
+#Create clusters object using kmeans
+set.seed(1)
+kmeans_obj_bball = kmeans(for_clustering, centers = 2, 
+                        algorithm = "Lloyd")  
+#Produce cluster column
+full_nba_data$cluster<-kmeans_obj_bball$cluster
+
+```
+
+```{r}
+#Use NbClust to select a number of clusters that is best suited for the dataset
+library(NbClust)
+
+# Run NbClust.
+nbclust_obj = NbClust(data = for_clustering, method = "kmeans")
+
+# View the output of NbClust.
+#nbclust_obj
+
+freq_k = nbclust_obj$Best.nc[1,] #take the first row, which is number of clusters
+freq_k = data.frame(freq_k) #turn the first row into a datframe using data.frame
+
+#two clusters was the most recommended, so it must be the preferred number of clusters for this data
+freq_k
+
+```
+
+#Data Visualization in 2 Dimensions
+```{r}
+###Data Visualization 
+b_clusters = as.factor(kmeans_obj_bball$cluster) #cast clusters to type factor
+#View(kmeans_obj_bball)
+#View(as.data.frame(kmeans_obj_bball)) #viewing as a dataset
+
+###Plot Visualizaton and function to produce each graphic used to evaluate performance
+plotting_function<- function(var1,var2,title,x_label,y_label){
+  ggplot(for_clustering, aes(x = var1, #for_clustering will be used each time (cluster data)
+                   y = var2,
+                   color=b_clusters,
+                   shape = b_clusters)) + #1,2,etc.
+  geom_point(size = for_clustering$sal) + #size of points vary by salary column; a way to visually distinguish players who are more highly paid
+  ggtitle(title)+
+  xlab(x_label)+
+  ylab(y_label)+
+  scale_shape_manual(name = "Cluster", 
+                     labels = c("Cluster 1", "Cluster 2"),
+                     values = c("1", "2")) +
+  theme_light()
+
+}
+
+
+plotting_function('AGE','G','hello','mp','efg')
+```
+
+#Data Visualization in 3 Dimensions
+```{r}
+# Assign colors by cluster in a new data frame.
+color3D= data.frame(cluster = c(1, 2),
+                               color = c("cluster 1", "cluster 2"))
+
+
+# Join new df with original dataset
+colorful = inner_join(full_nba_data, color3D,by='cluster')
+
+#3D plot into function
+plot_3d <- function(data, var1, var2, var3){
+  fig <- plot_ly(data,type = "scatter3d",mode="markers", x = ~var1, y = ~var2, z = ~var3,  color = ~color, colors = c('#0C4B8E','#BF382A'), text = ~paste('Player:', data$Player))
+
+fig
+}
+```
+
+```{r}
+#Using the function created on differing pairs of variables used for evaluation of performance
+#plotting_function(full_nba_data$MP, full_nba_data$`eFG%`, full_nba_data, factor_clusters)
+#^in this specific scenario we choose to analyze minutes played versus effective field goal percentage
+```
+
