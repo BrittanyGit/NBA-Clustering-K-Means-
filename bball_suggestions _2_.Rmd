@@ -1,0 +1,262 @@
+---
+title: "NBA Performance and Salary Report"
+author: "Brittany Nguyen DS 3001"
+output:
+  html_document:
+    toc: TRUE
+    theme: journal
+    toc_float: TRUE
+---
+```{r setup, include=FALSE,warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#  Details of Approach/Pseudocode  
+1. Load necessary packages and datasets. 
+2. Preprocess data using function that merges the two datasets, omits missing values, and ensures each player has 1 set of stats (not redundant). 
+3. Standardize values using a function such that all values are between 0 and 1 (clustering is distance-based). 
+4. Subset data to only the variables to be used for clustering. 
+5. Perform k means clustering and NBCluster to evaluate ideal number of clusters for the purpose of the experiment. 
+6. Perform data visualization in 2 and 3 dimensions using function that takes as inputs different pairs of variables to be evaluated to make conclusions about player performance. 
+7. Identify (based on visualizations) what players are performing highly (based on differing pairs of variables used) but are not paid highly comparatively. 
+
+```{r, include=FALSE}
+###Load necessary packages
+library(e1071)
+library(tidyverse)
+library(plotly)
+library(stringi)
+library(DT)
+```
+#  Data Preprocessing Function and Standardization of Values (to proportions between 0 and 1)   
+```{r, include=FALSE}
+###Read in the two data frames and create function for pre-processing/cleaning of data, as well as merging of the two data frames
+d1<-read_csv("nbasuperfile.csv")
+d2<-read_csv("nbasal.csv")
+```
+
+```{r}
+
+nba_pre_processing <- function(d1,d2){
+  #omit missing vals in each data frame
+  d1<-na.omit(d1) 
+  d2<-na.omit(d2)
+  #only keep "TOT" data from traded players to prevent multiple stats for each player
+  d1<-d1 %>% distinct(Player, .keep_all = TRUE) 
+  #merge the information and salary dataframes together
+  full_nba_data = left_join(d1,d2) 
+  #players should only be considered if >= 50 mins. played.
+  full_nba_data<-full_nba_data%>%distinct(Player,.keep_all =TRUE)%>%filter(MP>50) 
+  full_nba_data<-na.omit(full_nba_data) #omit any more missing values, if present
+  #omit problematic str. values in Player column
+  full_nba_data$Player <- str_replace_all(full_nba_data$Player, "[[:punct:]]", " ")
+  full_nba_data$Player <- str_replace_all(full_nba_data$Player, "[^[:alnum:]]", " ")
+  full_nba_data
+}
+#save back to the data frame the result of running the function with the two data frames as input
+full_nba_data <- nba_pre_processing(d1,d2)
+#the merged dataframe containing player stats along with salary (`2020-21` column)
+
+
+```
+
+```{r}
+#produce additional column with standardized salaries; to be used in data viz
+full_nba_data <- full_nba_data %>%
+ mutate(sal = `2020-21` / 2000000)
+#full_nba_data
+```
+
+```{r}
+###Alter data frame by standardizing certain columns
+range_vals<-function(x){(x-min(x))/(max(x)-min(x))} #this function will scale all values of interest in the data frame to a decimal value between 0 and 1
+#https://stats.stackexchange.com/questions/70801/how-to-normalize-data-to-0-1-range
+
+#feed the following columns of interest into the function to convert the columns to standardized proportions for comparison
+full_nba_data$Age<-range_vals(full_nba_data$Age) 
+full_nba_data$G<-range_vals(full_nba_data$G)
+full_nba_data$MP<-range_vals(full_nba_data$MP) 
+full_nba_data$ORB<-range_vals(full_nba_data$ORB)
+full_nba_data$DRB<-range_vals(full_nba_data$DRB)
+full_nba_data$TRB<-range_vals(full_nba_data$TRB)
+full_nba_data$AST<-range_vals(full_nba_data$AST) 
+full_nba_data$STL<-range_vals(full_nba_data$STL)
+full_nba_data$BLK<-range_vals(full_nba_data$BLK) 
+full_nba_data$TOV<-range_vals(full_nba_data$TOV) 
+datatable(full_nba_data)
+```
+
+# Rationale for Cluster Variable Selection   
+1. Age: Younger players have more potential but are also more enigmatic in nature; older players have less time to improve or changer their game. 
+2. Games Played: Games played is directly correlated with experience and developed skill over time; also correlates to value of player on differing teams. 
+3. Minutes Played: More minutes played is also directly correlated with experience of a player; a low number of minutes played despite a high number of games played may imply a reduced skill level than one would think and thus both MP and G must be analyzed. 
+4. Field Goal Percentage: directly correlated to player skill and accuracy; good metric for analysis to identify good shooters, etc. (shots made divided by total shots). 
+5. 3 Point Percentage and 2 Point Percentage: also directly correlated to player skill and accuracy; can be used to identify good shooters and good offensive players. 
+6. Effective Field Goal Percentage: Same trend and conclusions as Field Goal Percentage (used to identify effective shooters) but is more biased upwards as 3 point shots are weighed more heavily; better/more rounded indicator of player's performance and skill level. 
+7. Free Throw Percentage: correlated with players that perform well and earn the team points when free throw opportunities are presented. 
+8. Total Rebounds: Measures total rebounds for the players; correlates with how well the player can regain control of the ball/overall performance. 
+9. Assists: Correlates with performance in working with other team members who may have high accuracy/performance; scoping out players with higher levels of assists will allow for a stronger team dynamic overall. 
+10. Steals: Correlates with how well defensive players can cause turnovers of the ball; correlates with high level performance. 
+11. Blocks: Another defensive metric that correlates with high level performance. 
+
+```{r}
+#Subset standardized data frame to Variables of Interest (those to be used in evaluating player performance)
+for_clustering<- full_nba_data[, c("Age", "G", "MP","FG%","3P%", "2P%", "eFG%", "FT%", "TRB", "AST", "STL", "BLK")] 
+#use syntax df[r,c]
+#View(for_clustering)
+```
+
+
+#  K Means Distance Measure Clustering   
+```{r}
+#Create clusters object using kmeans
+set.seed(1)
+kmeans_obj_bball = kmeans(for_clustering, centers = 2, #use cluster variables to form the clusters
+                        algorithm = "Lloyd")  
+#Produce cluster column with cluster classifications (1,2) in this scenario
+full_nba_data$cluster<-kmeans_obj_bball$cluster
+
+```
+
+#  Evaluation of Number of Clusters to Effectively Determine High Performing + Underpaid Players   
+```{r}
+#Use NbClust to select a number of clusters that is best suited for the dataset
+library(NbClust)
+
+# Run NbClust.
+nbclust_obj = NbClust(data = for_clustering, method = "kmeans")
+
+# View the output of NbClust.
+#nbclust_obj
+
+freq_k = nbclust_obj$Best.nc[1,] #take the first row, which is number of clusters
+freq_k = data.frame(freq_k) #turn the first row into a data frame using data.frame
+
+#two clusters was the most recommended; must be relatively effective in forming groups of players for analysis based upon pairings of variables
+freq_k
+
+```
+
+#  Data Visualization in 2 Dimensions    
+```{r}
+###Data Visualization 
+b_clusters = as.factor(kmeans_obj_bball$cluster) #cast clusters to type factor
+
+
+###Plot Visualization and function to produce each graphic used to evaluate performance
+ploting_function<- function(var1,var2,data, cluster_shape, title, x_label, y_label){
+  ggplot(data, aes(x = var1, 
+                   y = var2,
+                   text = Player,
+                   color = cluster, #color varies by cluster classification
+                   shape = cluster_shape)) + 
+  geom_point(size = data$sal) + #size will vary based upon salary
+  ggtitle(title) +
+  xlab(x_label) +
+  ylab(y_label) +
+  scale_shape_manual(name = "Cluster", 
+                     labels = c("Cluster 1", "Cluster 2"), #Note: this portion of the code will only work for 2 clusters (not as robust for different datasets)
+                     values = c("1", "2")) +
+  theme_light()
+
+}
+
+
+```
+
+```{r}
+#Age versus Effective Field Goal Percentage:
+#This data tells us what AGE is correlated with a high performing eFG%
+age_efg<-ploting_function(full_nba_data$Age, full_nba_data$`eFG%`, full_nba_data, b_clusters, "Age vs Efective Field Goal Percentage", "Age", "Efective Field Goal Percentage")
+ggplotly(age_efg)
+```
+
+```{r}
+#Assists versus Total Rebounds:
+#This data tells us what players are performing highly as OFFENSIVE players
+assists_rebound <- ploting_function(full_nba_data$AST, full_nba_data$TRB, full_nba_data, b_clusters, "Assists vs Rebounds", "Assists", "Rebounds")
+ggplotly(assists_rebound)
+```
+
+```{r}
+#Steals versus Blocks:
+#This data tells us what players are performing highly as DEFENSIVE players
+steals_blocks <- ploting_function(full_nba_data$STL, full_nba_data$BLK, full_nba_data, b_clusters, "Steals vs Blocks", "Steals", "Blocks")
+ggplotly(steals_blocks)
+```
+
+```{r}
+#EFG versus Minutes Played:
+#This data tells us what players are accurate in SHOOTING THE BALL
+efg_mins_played <- ploting_function(full_nba_data$`eFG%`, full_nba_data$MP, full_nba_data, b_clusters, "Effective Field Goal Percentage vs Minutes Played", "Effective Field Goal Percentage", "Minutes Played")
+ggplotly(efg_mins_played)
+```
+
+#  Data Visualization in 3 Dimensions (with the same cluster variable pairings as before plus third dimensional variable)    
+```{r}
+# Assign colors by party in a new data frame.
+color3D= data.frame(cluster = c(1, 2),
+                               color = c("cluster 1", "cluster 2")) #Note: this portion of the code will only work for 2 clusters (not as robust)
+
+
+# Join the new data frame to orginial data set.
+cluster_color = inner_join(full_nba_data, color3D,by='cluster')
+
+#putting 3D plot into a function
+plot_3d <- function(data, var1, var2, var3){
+  fig <- plot_ly(data,type = "scatter3d",mode="markers", x = ~var1, y = ~var2, z = ~var3,  color = ~color, colors = c('#0C4B8E','#BF382A'), text = ~paste('Player:', data$Player))
+
+fig
+}
+```
+
+```{r}
+#Assists versus Effective Field Goal percentage versus Total Rebounds:
+#This data tells us what players are performing highly as OFFENSIVE players
+assists_eFieldGoals_rebounds <- plot_3d(cluster_color, cluster_color$AST, cluster_color$`eFG%`, cluster_color$TRB)
+assists_eFieldGoals_rebounds
+```
+
+```{r}
+#Steals versus Blocks versus Total Rebounds:
+#This data tells us what players are performing highly as DEFENSIVE players
+steals_blocks_rebounds <- plot_3d(cluster_color, cluster_color$STL, cluster_color$BLK, cluster_color$TRB)
+steals_blocks_rebounds 
+```
+
+```{r}
+#2 Point versus 3 Point versus Free Throw Percentages:
+#This data tells us what players are accurate in SHOOTING THE BALL
+shots <- plot_3d(cluster_color, cluster_color$`2P%`, cluster_color$`3P%`, cluster_color$`FT%`)
+shots
+```
+
+#  Players to Steal/Underrated Players      
+Methodology: Size of data points correlates with Salary amount. Thus, smaller data points that are within groups of larger data points can be pinpointed as players that are high performing, yet underpaid. The following players were concluded to fit into this classification as follows:  
+
+*Based on Age 2D Plot:  
+1. Mikal Bridges and Robert Williams: both of these players are very young, and thus must have less game experience than do older players. Despite this, Bridges's eFG% is 0.625 and Williams's eFG% is 0.72, some of the highest in the plot. Their points are also some of the smallest on the plot, indicating a very low salary that is not reflective of their performance even compared to older players. Additionally, both of these players fall into the "circle shape" cluster which is shared by some of the most skilled and highly paid players. This means that overall, their classification based on the designated clustering variable set is more aligned with the classifications of highly paid players (they should be stolen for our team!)  
+2. Mason Plumlee and Darius Miller: According to the Age 2D plot, both of these players are relatively high in age but make a small salary, despite their high free throw percentage of 0.6 or higher. They are among several large data points, indicating the equity of their performance to more highly paid players.  
+
+*Based on Defensive 2D Plot:  
+1. Robert Covington: Robert has 0.84 for his steal value, and an about average 0.35 blocks value. Despite this, his data point is small/medium sized compared to his similarly performing counterparts. Some bigger data points/players have an even smaller block percentage and only a slightly larger steal percentage.  
+2. Myles Turner has almost a 1.0 value (the highest value in the plot) for his block proportion, but only earns a medium salary compared to players who have a higher average steal value but much lower block value.
+Both of these players were classified in the "circle" category along with many of the most highly paid players; their common classification and alignment of clustering variables across the board justifies that they should be drafted by our management and offered a higher salary.  
+
+*Based on Offensive 2D Plot:  
+1. Luka Doncic: Luka has a 0.83 Assist and 0.56 Rebound percentage; his small data point (indicating a relatively small salary for his high performance on both variables) is amongst some of the most well-known and well-paid players, including Lebron James.
+Doncic was classified in the "circle" category along with many of the most highly paid players; his common classification and alignment of clustering variables across the board justifies that he should be drafted by our management and offered a higher salary.  
+
+*Based on Shooting 2D Plot:  
+1. Joe Harris: Joe has a 0.69 eFG% and a 0.83 minutes played, which are both relatively high on the plot. This indicates that not only is he an accurate shooter, but he is valued by is team and has played many minutes. His point is relatively small compared to the larger point (and similar performance) of Rudy Gobert.  
+2. Jarrett Allen has both a 0.67 eFG% and 0.70 minutes played, which like Harris are high. Despite only a small difference in performance from Joe Harris, his point is comparatively much smaller. Allen is very underrated and is not being paid nearly the same amount as Harris, despite only a slightly smaller level of performance.  
+Both of these players were classified in the "circle" category along with many of the most highly paid players; their common classification and alignment of clustering variables across the board justifies that they should be drafted by our management and offered a higher salary.  
+
+#  Risks of Using Model and Next Steps   
+1. One risk of the data processing function we employed involved the omitting of players with missing values for any of the metrics, even just one. The omission of players that fell into this category supplies us and the model with less data on which to base our conclusions.  
+2. Some metrics could have been divided into smaller categories and nuances, such as analyzing offensive versus defensive rebounds or eFG%, etc. Including more levels for each metric would provide a more nuanced evaluation of player performance.  
+3. As for the model itself, we tried to pinpoint players with relatively small circles. As it is tedious to try and hover over these small points of interest, the user may easily "give up" and decide to only pick medium-sized points for analysis in lieu of even smaller points that may indicate truly underrated players.  
+As a future improvement this can be adjusted for by varying salary by color or shape instead of size to make all the points equally easy to hover over.
+4. The model favors center players more (higher eFG%, more blocks/rebounds, etc.) and thus conclusions about underrated players may be slightly biased upwards in this category. A future improvement to the model may involve varying the point size/shape by position as well, to understand more about why players perform well in certain areas.  
+5. A support vector machine model may be utilized in the future with previous data in order to understand the categories that are more closely related to salary; these should be the focus of further clustering. 
+
+
